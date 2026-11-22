@@ -87,13 +87,14 @@ class AttendanceRecord {
   }
 
   AttendanceRecord copyWith({
+    String? id,
     AttendanceStatus? status,
     DateTime? checkInTime,
     bool? verified,
     String? qrPayload,
   }) {
     return AttendanceRecord(
-      id: id,
+      id: id ?? this.id,
       ticketId: ticketId,
       paroleeId: paroleeId,
       paroleeName: paroleeName,

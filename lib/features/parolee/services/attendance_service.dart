@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:last/core/utils/app_logger.dart';
 import 'package:last/core/utils/supabase_config.dart';
 import 'package:last/core/utils/ticket_generator.dart';
 import 'package:last/features/auth/models/app_user.dart';
@@ -64,14 +65,15 @@ class SupabaseAttendanceService implements AttendanceService {
   @override
   Future<AttendanceRecord> createCheckIn(AppUser parolee, {String? location}) async {
     final ticketId = TicketGenerator.generate();
-    final rec = AttendanceRecord(
+    final now = DateTime.now();
+    var rec = AttendanceRecord(
       id: const Uuid().v4(),
       ticketId: ticketId,
       paroleeId: parolee.id,
       paroleeName: parolee.fullName,
       officerId: parolee.officerId ?? '',
       status: AttendanceStatus.pending,
-      scheduledTime: DateTime.now(),
+      scheduledTime: now,
       location: location ?? 'PPA Tacloban Office',
       verified: false,
     );
@@ -79,17 +81,31 @@ class SupabaseAttendanceService implements AttendanceService {
 
     if (SupabaseConfig.isConfigured) {
       try {
-        await _supabase.from('attendance_records').insert({
-          'id': rec.id,
+        final payload = <String, dynamic>{
           'ticket_id': rec.ticketId,
           'parolee_id': rec.paroleeId,
           'parolee_name': rec.paroleeName,
-          'officer_id': rec.officerId,
+          if (rec.officerId.isNotEmpty) 'officer_id': rec.officerId,
           'status': rec.status.name,
+          'scheduled_time': now.toIso8601String(),
           'location': rec.location,
           'verified': false,
-        });
-      } catch (_) {}
+          'record_type': 'checkin',
+        };
+        final inserted = await _supabase
+            .from('attendance_records')
+            .insert(payload)
+            .select('id')
+            .limit(1);
+        if ((inserted as List).isNotEmpty) {
+          final dbId = (inserted.first as Map)['id']?.toString();
+          if (dbId != null && dbId.isNotEmpty) {
+            rec = rec.copyWith(id: dbId);
+          }
+        }
+      } catch (e) {
+        AppLogger.e('AttendanceService', 'createCheckIn insert failed', e);
+      }
     }
     return rec;
   }
@@ -97,14 +113,56 @@ class SupabaseAttendanceService implements AttendanceService {
   @override
   Future<AttendanceRecord> verifyQr(String qrPayload, AppUser officer) async {
     final ticketId = TicketGenerator.extractTicketId(qrPayload) ?? TicketGenerator.generate();
-    final rec = AttendanceRecord(
+    final now = DateTime.now();
+    String paroleeId = '';
+    String paroleeName = 'Parolee';
+
+    if (SupabaseConfig.isConfigured) {
+      try {
+        final existing = await _supabase
+            .from('attendance_records')
+            .select()
+            .eq('ticket_id', ticketId)
+            .limit(1);
+        if ((existing as List).isNotEmpty) {
+          final row = Map<String, dynamic>.from(existing.first as Map);
+          final existingId = row['id'];
+          paroleeId = (row['parolee_id'] ?? row['paroleeId'])?.toString() ?? '';
+          paroleeName = (row['parolee_name'] ?? row['paroleeName'])?.toString() ?? 'Parolee';
+          await _supabase.from('attendance_records').update({
+            'officer_id': officer.id,
+            'status': AttendanceStatus.confirmed.name,
+            'check_in_time': now.toIso8601String(),
+            'verified': true,
+          }).eq('id', existingId);
+
+          final updated = AttendanceRecord(
+            id: existingId.toString(),
+            ticketId: ticketId,
+            paroleeId: paroleeId,
+            paroleeName: paroleeName,
+            officerId: officer.id,
+            status: AttendanceStatus.confirmed,
+            checkInTime: now,
+            location: row['location']?.toString() ?? 'PPA Tacloban Office',
+            verified: true,
+          );
+          _local.insert(0, updated);
+          return updated;
+        }
+      } catch (e) {
+        AppLogger.e('AttendanceService', 'verifyQr lookup failed', e);
+      }
+    }
+
+    var rec = AttendanceRecord(
       id: const Uuid().v4(),
       ticketId: ticketId,
-      paroleeId: 'demo-parolee',
-      paroleeName: 'Juan Dela Cruz',
+      paroleeId: paroleeId,
+      paroleeName: paroleeName,
       officerId: officer.id,
       status: AttendanceStatus.confirmed,
-      checkInTime: DateTime.now(),
+      checkInTime: now,
       location: 'PPA Tacloban Office',
       verified: true,
     );
@@ -112,18 +170,30 @@ class SupabaseAttendanceService implements AttendanceService {
 
     if (SupabaseConfig.isConfigured) {
       try {
-        await _supabase.from('attendance_records').insert({
-          'id': rec.id,
-          'ticket_id': rec.ticketId,
-          'parolee_id': rec.paroleeId,
-          'parolee_name': rec.paroleeName,
-          'officer_id': rec.officerId,
-          'status': rec.status.name,
-          'check_in_time': rec.checkInTime?.toIso8601String(),
-          'location': rec.location,
-          'verified': true,
-        });
-      } catch (_) {}
+        final inserted = await _supabase
+            .from('attendance_records')
+            .insert({
+              'ticket_id': rec.ticketId,
+              if (rec.paroleeId.isNotEmpty) 'parolee_id': rec.paroleeId,
+              'parolee_name': rec.paroleeName,
+              'officer_id': rec.officerId,
+              'status': rec.status.name,
+              'check_in_time': now.toIso8601String(),
+              'location': rec.location,
+              'verified': true,
+              'record_type': 'checkin',
+            })
+            .select('id')
+            .limit(1);
+        if ((inserted as List).isNotEmpty) {
+          final dbId = (inserted.first as Map)['id']?.toString();
+          if (dbId != null && dbId.isNotEmpty) {
+            rec = rec.copyWith(id: dbId);
+          }
+        }
+      } catch (e) {
+        AppLogger.e('AttendanceService', 'verifyQr insert failed', e);
+      }
     }
     return rec;
   }
@@ -133,7 +203,9 @@ class SupabaseAttendanceService implements AttendanceService {
     if (SupabaseConfig.isConfigured) {
       try {
         await _supabase.from('attendance_records').update({'status': status.name}).eq('id', id);
-      } catch (_) {}
+      } catch (e) {
+        AppLogger.e('AttendanceService', 'updateStatus failed', e);
+      }
     }
   }
 

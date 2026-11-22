@@ -113,6 +113,8 @@ class TrackingAlertCooldownService {
         }
         await SupabaseConfig.client.from('tracking_alert_cooldowns').upsert({
           'id': docId,
+          'tracker_id': trackerId,
+          if (paroleeId != null && paroleeId.isNotEmpty) 'parolee_id': paroleeId,
           'last_sent_at': now.toIso8601String(),
           'alert_type': alertType,
         });
